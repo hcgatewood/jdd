@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+
+# jdd is a diff-over-time navigator for JSON objects.
+#
+# dive: stream or store successive versions of a JSON object as a JSONL file, and use jdd to dive through the changes.
+# surf: explore a single JSON object via interactive query preview.
+
+# dive is the main jdd command.
+#
+# Usage: jdd [dive] [FILE] [OPTIONS]
+function dive {
+    exec 3<&0
+    exec </dev/null
+
+    local file=""
+    local watch=""
+    local interval=5
+    local tag=""
+    local do_uniq=true
+    local do_follow=false
+    local no_follow=false
+    local do_show_file=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --watch|-w) watch="$2" ; shift 2 ;;
+            --interval|-i) interval="$2" ; shift 2 ;;
+            --tag) tag="$2" ; shift 2 ;;
+            --no-uniq) do_uniq=false ; shift ;;
+            --follow|-f) do_follow=true ; shift ;;
+            --no-follow) no_follow=true ; shift ;;
+            --file) do_show_file=true ; shift ;;
+            --help|-h) help ; return 0 ;;
+            -*) echo "Unknown option: $1" >&2 ; help ; return 1 ;;
+            *) file="$1" ; shift ;;
+        esac
+    done
+
+    [[ -n "$file" && -n "$watch" ]] && { echo "Cannot specify both FILE and --watch" >&2 ; return 1 ; }
+    [[ "$do_follow" = true && "$no_follow" = true ]] && { echo "Cannot specify both --follow and --no-follow" >&2 ; return 1 ; }
+    [[ -n "$watch" && "$no_follow" = true ]] && { echo "Cannot specify both --watch and --no-follow" >&2 ; return 1 ; }
+    local follow=()
+    [[ ( -z "$file" && "$no_follow" = false ) || "$do_follow" = true || -n "$watch" ]] && do_follow=true
+    [[ "$do_follow" = true ]] && follow+=("-f")
+
+    if [[ -n "$file" ]] ; then
+        [[ ! -f "$file" ]] && { echo "File does not exist: $file" >&2 ; return 1 ; }
+        [[ ! -r "$file" ]] && { echo "File is not readable: $file" >&2 ; return 1 ; }
+        [[ ! -s "$file" ]] && { echo "File is empty: $file" >&2 ; return 1 ; }
+    fi
+
+    local val_idx=2
+    local jq_prog='[input_line_number, .] | @tsv'
+    if [[ -n "$tag" ]] ; then
+        jq_prog="(try (fromjson | $tag) catch null) as \$h | [input_line_number, (\$h // \"\"), .] | @tsv"
+        val_idx=3
+    fi
+
+    local -a preprocessor=(jaq --sort-keys --compact-output .)
+    [[ -n "$JDD_PREPROCESSOR" ]] && eval "preprocessor=($JDD_PREPROCESSOR)"
+    local -a watch_cmd=(true)
+    [[ -n "$watch" ]] && eval "watch_cmd=($watch)"
+
+    function maybe_preprocess { if ((${#preprocessor[@]} > 0)) && [[ -n ${preprocessor[0]} ]] ; then "${preprocessor[@]}" ; else cat ; fi ; }
+    function maybe_uniq { if [[ "$1" = true ]] ; then awk 'NR==1 { last=$0; print $0; next } { if ($0 != last) { print $0; last=$0 } }' ; else cat ; fi ; }
+    function maybe_uniq_watch { if [[ "$1" = true ]] ; then awk -v last="$2" 'NR==1 { if ($0 != last) print $0 }' ; else cat ; fi ; }
+
+    local previewer="${JDD_PREVIEWER:-jq --color-output .}"
+    local differ="${JDD_DIFFER:-jsondiffpatch}"
+    local inspector="${JDD_INSPECTOR:-fx}"
+    local copier="${JDD_COPIER:-pbcopy}"
+
+    local -a pids=()
+    if [[ -z "$file" || -n "$watch" || "$do_uniq" = true ]] ; then  # stdin needs to go to a tmp file
+        inp_file="$file"
+        file=$(mktemp)
+        if [[ -n "$watch" ]] ; then
+            ( while true ; do last=$(tail -n 1 "$file" 2>/dev/null || true) ; "${watch_cmd[@]}" | maybe_preprocess | maybe_uniq_watch "$do_uniq" "$last" >> "$file" ; sleep "$interval" ; done ) & pid_inp=$!
+        else
+            if [[ -n "$inp_file" ]] ; then
+                [[ "$do_uniq" = true ]] && ( tail -n +1 "$inp_file" | maybe_uniq "$do_uniq" >> "$file" ) & pid_inp=$!
+            else
+                ( tail -n +1 -f <&3 | maybe_uniq "$do_uniq" >> "$file" ) & pid_inp=$!
+            fi
+        fi
+        pids+=("$pid_inp")
+    fi
+    fifo0=$(mktemp -u) ; mkfifo "$fifo0"
+    fifo1=$(mktemp -u) ; mkfifo "$fifo1"
+    ( tail -n +1 "${follow[@]}" -- "$file" > "$fifo0" ) & pid_tail=$!
+    ( jq --unbuffered --raw-input --raw-output "$jq_prog" < "$fifo0" > "$fifo1" ) & pid_jq=$!
+    pids+=("$pid_tail" "$pid_jq")
+    trap "kill ${pids[*]} > /dev/null 2>&1 ; rm -f \"$fifo0\" \"$fifo1\" || true" EXIT
+
+    local max_wait=3000  # milliseconds
+    local waited=0
+    local printed=false
+    while [[ ! -s "$file" ]]; do
+        kill -0 "$pid_inp" 2>/dev/null || { echo "No JSON received." >&2 ; return 1 ; }
+        sleep 0.1
+        waited=$((waited + 100))
+        if [[ $waited -ge "$max_wait" && "$printed" = false ]]; then
+            printf "Waiting for input..." >&2
+            printed=true
+        fi
+    done
+
+    local -a header=()
+    [[ "$do_show_file" = true || -n "$JDD_SHOW_FILE" ]] && header+=(--header "File: $file")
+
+    FILE="$file" PREVIEWER="$previewer" DIFFER="$differ" INSPECTOR="$inspector" COPIER="$copier" fzf < "$fifo1" \
+        --exact \
+        --delimiter=$'\t' \
+        --accept-nth="${val_idx}.." \
+        --track \
+        --no-sort \
+        "${header[@]}" \
+        --info=inline-right \
+        --tabstop=4 \
+        --freeze-left=2 \
+        --layout=reverse \
+        --tiebreak=begin,chunk,length \
+        --with-shell="bash -lc" \
+        --preview-window="bottom:70%" \
+        --bind "ctrl-n:down" \
+        --bind "ctrl-p:up" \
+        --bind "ctrl-j:page-down" \
+        --bind "ctrl-d:page-down" \
+        --bind "ctrl-k:page-up" \
+        --bind "ctrl-u:page-up" \
+        --bind "ctrl-h:preview-page-up" \
+        --bind "ctrl-l:preview-page-down" \
+        --bind "ctrl-f:first" \
+        --bind "ctrl-g:last" \
+        --bind "ctrl-v:up-match" \
+        --bind "ctrl-b:down-match" \
+        --bind "ctrl-t:best" \
+        --bind "ctrl-w:clear-query" \
+        --bind "ctrl-r:toggle-raw" \
+        --bind 'ctrl-y:execute-silent: echo -n {'"${val_idx}"'..} | $COPIER' \
+        --bind "ctrl-o:accept" \
+        --bind 'enter:transform:
+            q={q}
+            f="\{f'"$val_idx"'..}"
+            if [[ ! $FZF_PROMPT =~ ^goto ]]; then
+                #echo "execute($INSPECTOR $f)"
+                echo "execute(jdd surf \"$f\")"
+                exit 0
+            fi
+            if [[ "$q" =~ ^[0-9]+$ ]]; then
+                echo "enable-search+pos($q)+change-prompt(> )+clear-query"
+                exit 0
+            fi
+            echo "enable-search+change-prompt(> )+clear-query"
+        ' \
+        --bind 'tab:transform:
+            q={q}
+            if [[ ! $FZF_PROMPT =~ ^goto ]]; then
+                echo "disable-search+change-prompt(goto> )+clear-query"
+                exit 0
+            fi
+            if [[ "$q" =~ ^[0-9]+$ ]]; then
+                echo "enable-search+pos($q)+change-prompt(> )+clear-query"
+                exit 0
+            fi
+            echo "enable-search+change-prompt(> )+clear-query"
+        ' \
+        --bind 'esc:transform:
+            if [[ ! $FZF_PROMPT =~ ^goto ]]; then
+                echo "abort"
+                exit 0
+            fi
+            echo "enable-search+change-prompt(> )+clear-query"
+        ' \
+        --preview '
+            idx={1}
+            if [ "$idx" -eq 1 ]; then
+                sed -n "${idx}p" "$FILE" | $PREVIEWER
+            else
+                prev=$((idx - 1))
+                FORCE_COLOR=1 $DIFFER <(sed -n "${prev}p" "$FILE") <(sed -n "${idx}p" "$FILE")
+            fi
+        '
+}
+
+# surf explores a single JSON object via interactive query preview.
+#
+# Usage: jdd surf [FILE] [OPTIONS]
+function surf {
+    local file=""
+    local do_show_file=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file) do_show_file=true ; shift ;;
+            --help|-h) help ; return 0 ;;
+            -*) echo "Unknown option: $1" >&2 ; help ; return 1 ;;
+            *) file="$1" ; shift ;;
+        esac
+    done
+    [[ -z "$file" ]] && { file=$(mktemp) && cat > "$file"; }
+    [[ ! -f "$file" ]] && { echo "File does not exist: $file" >&2 ; return 1 ; }
+    [[ ! -r "$file" ]] && { echo "File is not readable: $file" >&2 ; return 1 ; }
+    [[ ! -s "$file" ]] && { echo "File is empty: $file" >&2 ; return 1 ; }
+
+    surfer="${JDD_SURFER:-jaq}"
+    surfer_preview="${JDD_SURFER_PREVIEW:-${surfer} --color-output}"
+    surfer_output="${JDD_SURFER_OUTPUT:-${surfer} --raw-output}"
+
+    local -a header=()
+    [[ "$do_show_file" = true || -n "$JDD_SHOW_FILE" ]] && header+=(--header "File: $file")
+
+    FILE="$file" PREVIEW="$surfer_preview" OUTPUT="$surfer_output" fzf < /dev/null \
+        --disabled \
+        --print-query \
+        --ghost="." \
+        "${header[@]}" \
+        --prompt="jq> " \
+        --no-info \
+        --layout=reverse \
+        --with-shell="bash -lc" \
+        --preview-window="bottom:99%" \
+        --bind 'ctrl-o:become:$OUTPUT {q} $FILE 2>/dev/null || $OUTPUT . $FILE || echo "Could not evaluate query." >&2' \
+        --preview='$PREVIEW {q} $FILE 2>/dev/null || $PREVIEW . $FILE || echo "Could not evaluate query." >&2'
+}
+
+function help {
+   cat >&2 <<EOF
+Navigate successive versions of a JSON object.
+
+Usage: jdd [COMMAND] [FILE] [FLAGS]
+
+Commands:
+    (no command)      Guess command from FILE extension
+    dive              Navigate successive versions of a JSON object, via streaming or stored JSONL file.
+    surf              Explore a single JSON object via interactive query preview.
+    help              Show this help message.
+
+Options:
+    --file             Show the file being processed.
+
+Dive options:
+    --watch COMMAND    Watch mode: run COMMAND periodically to get new JSON object versions.
+    --interval N       Interval in seconds between watch COMMAND executions (default: 5).
+    --follow, -f       Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given).
+    --no-follow        Disable follow mode.
+    --no-uniq          Do not filter out consecutive duplicate JSON entries.
+    --tag OBJECT_PATH  Specify JSON object path to use as tag for each entry.
+
+Dive keybindings:
+    Ctrl-N/Down       Down.
+    Ctrl-P/Up         Up.
+    Ctrl-J/Ctrl-D     Page down.
+    Ctrl-K/Ctrl-U     Page up.
+    Ctrl-L            Preview page down.
+    Ctrl-H            Preview page up.
+    Ctrl-F            Jump to first entry.
+    Ctrl-G            Jump to last entry.
+    Ctrl-V            Jump to previous match.
+    Ctrl-B            Jump to next match.
+    Ctrl-T            Jump to best match.
+    Ctrl-R            Toggle raw view.
+    Ctrl-W            Clear query.
+    Ctrl-Y            Copy current JSON entry to clipboard.
+    Ctrl-O            Output current JSON entry to stdout and exit.
+    Tab               Toggle 'goto' mode for jump to line number.
+    Enter             Open in fx for further inspection.
+EOF
+}
+
+
+case "$1" in
+    "") dive "$@" ;;
+    dive) shift || true ; dive "$@" ;;
+    surf) shift || true ; surf "$@" ;;
+    help|-h|--help) help ;;
+    *) case "${1##*.}" in
+            jsonl|ndjson) dive "$@" ;;
+            json) surf "$@" ;;
+            *) dive "$@" ;;
+        esac
+        ;;
+esac
