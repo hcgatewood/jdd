@@ -30,7 +30,7 @@ function dive {
             --record|--rec|-r) do_record=true ; shift ;;
             --watch|-w) watch="$2" ; shift 2 ;;
             --interval|--int|-i) interval="$2" ; shift 2 ;;
-            --file) save_file="$2" ; shift 2 ;;
+            --save) save_file="$2" ; shift 2 ;;
             --force) force_save_file=true ; shift ;;
             --tag) tag="$2" ; shift 2 ;;
             --preprocess|--pre) do_preprocess=true ; shift ;;
@@ -64,13 +64,13 @@ function dive {
         [[ ! -s "$file" ]] && { err "File is empty: $file" ; return 1 ; }
     done
     if [[ -n "$save_file" && -e "$save_file" ]] ; then
-        [[ ! -f "$save_file" ]] && { err "--file '$save_file' is not a regular file." ; return 1 ; }
-        [[ ! -w "$save_file" ]] && { err "--file '$save_file' is not writable." ; return 1 ; }
+        [[ ! -f "$save_file" ]] && { err "--save '$save_file' is not a regular file." ; return 1 ; }
+        [[ ! -w "$save_file" ]] && { err "--save '$save_file' is not writable." ; return 1 ; }
         if [[ "$force_save_file" = true ]] ; then
             rm -f "$save_file"
             debug "Removed existing save_file: '$save_file'"
         else
-            err "--file '$save_file' already exists. Use --force to overwrite."
+            err "--save '$save_file' already exists. Use --force to overwrite."
             return 1
         fi
     fi
@@ -388,7 +388,7 @@ Dive options:
     --record COMMAND    FILE Record mode: monitor FILE for changes and append new JSON object versions to it. (Alias: --rec, -r)
     --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
     --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
-    --file SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
+    --save SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
     --preprocess        Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR). (Alias: --pre)
     --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
     --no-follow         Disable follow mode.
@@ -506,18 +506,20 @@ function dispatch {
         help|-h|--help) shift || true ; help "$@" ; return ;;
     esac
 
-    local nfiles=0
+    local n_files=0
     local ext=""
+    local watch=false
     local record=false
     local arg=""
 
     for arg in "$@"; do
         case "$arg" in
+            --watch|-w) watch=true ;;
             --record|--rec|-r) record=true ;;
             -*) ;;  # other options
-            *.jsonl|*.ndjson) ext="jsonl" ; nfiles=$((nfiles + 1)) ;;
-            *.json) ext="json" ; nfiles=$((nfiles + 1)) ;;
-            *) nfiles=$((nfiles + 1)) ;;
+            *.jsonl|*.ndjson) ext="jsonl" ; n_files=$((n_files + 1)) ;;
+            *.json) ext="json" ; n_files=$((n_files + 1)) ;;
+            *) n_files=$((n_files + 1)) ;;
         esac
     done
 
@@ -525,12 +527,13 @@ function dispatch {
 
     case "$ext" in
         jsonl|ndjson) choice=dive ;;
-        json) if [[ "$record" = true || $nfiles -gt 1 ]] ; then choice=dive ; else choice=surf ; fi ;;
+        json) if [[ "$watch" = true || "$record" = true || $n_files -gt 1 ]] ; then choice=dive ; else choice=surf ; fi ;;
         *) choice=dive ;;
     esac
 
-    debug "  nfiles: $nfiles"
+    debug "  n_files: $n_files"
     debug "  ext: $ext"
+    debug "  watch: $watch"
     debug "  record: $record"
     debug "  choice: $choice"
 

@@ -36,36 +36,52 @@ chmod +x /usr/local/bin/jdd
 
 Subcommands: ***dive*** (alias: `hist`) is the JSON-over-time navigator, ***surf*** (alias: `insp`) is the single-JSON inspector.
 
-### History: JSONL file
+### Replay pre-recorded history
 
 ```bash
-jdd changes.jsonl  # automatically jdd dive
+jdd history.jsonl  # automatically jdd dive
 ```
 
-### History: with follow
+### Record some history
 
 ```bash
-# Via command
-jdd -f changes.jsonl  # automatically jdd dive
+# Polling
+jdd --pre --watch 'cat obj.json'
 
-# Or via pipe
-tail -n +1 -f changes.jsonl | jdd dive
+# Streaming
+jdd --pre --record obj.json
+
+# Save observed history to file
+jdd --pre --record obj.json --save history.jsonl
 ```
 
-### History: via watch
+### Watch a stream of changes
 
 ```bash
-# Via command (polling)
-jdd dive --watch "kubectl get pod YOUR_POD -o json" --interval 10 --pre
+# Polling
+jdd --pre --watch "kubectl get pod YOUR_POD -o json"
 
-# Or via pipe (streaming)
-kubectl get pod YOUR_POD --watch -o json | jdd dive --pre
+# Streaming
+kubectl get pod YOUR_POD --watch -o json | jdd --pre
+
+# Save observed history to file
+kubectl get pod YOUR_POD --watch -o json | jdd --pre --save history.jsonl
 ```
 
-### Inspect: JSON file
+### Tail an ongoing recording, or don't tail a stream
 
 ```bash
-jdd data.json  # automatically jdd surf
+# Tail an ongoing recording
+jdd -f history.jsonl
+
+# Sponge a history/stream before diving
+cat history.jsonl | jdd --no-follow
+```
+
+### Inspect a single JSON object
+
+```bash
+jdd obj.json  # automatically jdd surf
 ```
 
 ## Usage
@@ -92,7 +108,7 @@ Dive options:
     --record COMMAND    FILE Record mode: monitor FILE for changes and append new JSON object versions to it. (Alias: --rec, -r)
     --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
     --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
-    --file SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
+    --save SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
     --preprocess        Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR). (Alias: --pre)
     --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
     --no-follow         Disable follow mode.
@@ -131,6 +147,7 @@ Environment variables to customize behavior; generally they can be set to the na
 - `JDD_COPIER` clipboard copier: [pbcopy](https://ss64.com/mac/pbcopy.html) (default), [xclip](https://github.com/astrand/xclip), etc.
 - `JDD_SHOW_FILE` show file name in fzf header (default: unset)
 - `JDD_NO_HELP` don't show help keybinding in dive (default: unset)
+- `JDD_DEBUG` enable debug logging (default: unset)
 - Additional tools: [fzf](https://github.com/junegunn/fzf), [jq](https://github.com/jqlang/jq), [gron](https://github.com/tomnomnom/gron), [mlr](https://github.com/johnkerl/miller)
 
 ## How I use jdd
