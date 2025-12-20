@@ -1,0 +1,443 @@
+#!/usr/bin/env bash
+
+# jdd is a diff-over-time navigator for JSON objects.
+#
+# dive: stream or store successive versions of a JSON object as a JSONL file, and use jdd to dive through the changes.
+# surf: explore a single JSON object via interactive query preview.
+
+# dive is the main jdd command.
+#
+# Usage: jdd [dive] [FILE] [OPTIONS]
+function dive {
+    # Save stdin for later use
+    exec 3<&0
+    exec </dev/null
+
+    local file=""
+    local watch=""
+    local interval=5
+    local tag=""
+    local do_preprocess=false
+    local do_uniq=true
+    local do_follow=false
+    local no_follow=false
+    local do_show_file=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --watch|-w) watch="$2" ; shift 2 ;;
+            --interval|-i) interval="$2" ; shift 2 ;;
+            --tag) tag="$2" ; shift 2 ;;
+            --pre) do_preprocess=true ; shift ;;
+            --all) do_uniq=false ; shift ;;
+            --follow|-f) do_follow=true ; shift ;;
+            --no-follow) no_follow=true ; shift ;;
+            --file) do_show_file=true ; shift ;;
+            --help|-h) help ; return 0 ;;
+            -*) err "Unknown option: $1" ; help ; return 1 ;;
+            *) file="$1" ; shift ;;
+        esac
+    done
+
+    [[ "$do_follow" = true && "$no_follow" = true ]] && { err "Cannot specify both --follow and --no-follow" ; return 1 ; }
+    [[ -n "$file" && -n "$watch" ]] && { err "Cannot specify both FILE and --watch" ; return 1 ; }
+    [[ -n "$watch" && "$no_follow" = true ]] && { err "Cannot specify both --watch and --no-follow" ; return 1 ; }
+
+    [[ -n "$watch" || ( -z "$file" && "$no_follow" = false ) ]] && do_follow=true
+
+    if [[ -n "$file" ]] ; then
+        [[ ! -f "$file" ]] && { err "File does not exist: $file" ; return 1 ; }
+        [[ ! -r "$file" ]] && { err "File is not readable: $file" ; return 1 ; }
+        [[ ! -s "$file" ]] && { err "File is empty: $file" ; return 1 ; }
+    fi
+
+    local val_idx=2
+    local jq_prog='[input_line_number, . ] | @tsv'
+    if [[ -n "$tag" ]] ; then
+        jq_prog="(try (fromjson | $tag) catch null) as \$h | [input_line_number, (\$h // \"\"), .] | @tsv"
+        val_idx=3
+    fi
+
+    local -a preprocessor=(jq --unbuffered --sort-keys --compact-output .)
+    [[ -n "$JDD_PREPROCESSOR" ]] && eval "preprocessor=($JDD_PREPROCESSOR)"
+    local -a watcher=(true)
+    [[ -n "$watch" ]] && eval "watcher=($watch)"
+
+    local previewer="${JDD_PREVIEWER:-jq --color-output .}"
+    local differ="${JDD_DIFFER:-jsondiffpatch}"
+    local inspector="${JDD_INSPECTOR:-fx}"
+    local copier="${JDD_COPIER:-pbcopy}"
+
+    function maybe_preprocess { if [[ "$do_preprocess" = true ]] ; then "${preprocessor[@]}" ; else cat ; fi ; }
+    function maybe_tail { if [[ "$do_follow" = true ]] ; then tail -n +1 -f -- "$1" ; else cat "$1" ; fi ; }
+    function maybe_uniq { if [[ "$do_uniq" = true ]] ; then awk 'NR==1 { print $0; last=$0; fflush(); next } { if ($0 != last) { print $0; last=$0; fflush() } }' ; else cat ; fi ; }
+    function maybe_uniq_watch {
+        if [[ "$do_uniq" = true ]]; then
+            local last ; last=$(sed -n '$p' "$1" 2>/dev/null || true)
+            while IFS= read -r line; do
+                if ! "${differ[@]}" <(printf "%s" "$last") <(printf "%s" "$line") >/dev/null 2>&1 ; then
+                    printf "%s\n" "$line"
+                    last="$line"
+                fi
+            done
+        else
+            cat
+        fi
+    }
+
+    debug "Inputs"
+    debug "  file: $file"
+    debug "  watch: $watch"
+    debug "  interval: $interval"
+    debug "  tag: $tag"
+    debug "  do_preprocess: $do_preprocess"
+    debug "  do_uniq: $do_uniq"
+    debug "  do_follow: $do_follow"
+    debug "  no_follow: $no_follow"
+    debug "  do_show_file: $do_show_file"
+    debug "Intermediates"
+    debug "  json_prog: $jq_prog"
+    debug "Actors"
+    debug "  preprocessor: ${preprocessor[*]}"
+    debug "  watcher: ${watcher[*]}"
+    debug "  previewer: $previewer"
+    debug "  differ: $differ"
+    debug "  inspector: $inspector"
+    debug "  copier: $copier"
+
+    # Need a tmp file if we're watching, altering the file, or reading from stdin
+    inp_file="$file"
+    if [[ -n "$watch" ]] ; then
+        # Watch
+        file=$(mktemp)
+        do_follow=true  # implies follow
+        debug "Watch command '${watcher[*]}' into file: $file"
+        ( while true ; do "${watcher[@]}" | maybe_preprocess | maybe_uniq_watch "$file" | sponge >> "$file" ; sleep "$interval" ; done ) & pid_inp=$!
+    elif [[ -n "$inp_file" && ("$do_uniq" = true || "$do_preprocess" = true) ]] ; then
+        # Altered file
+        file=$(mktemp)
+        debug "Process input file '$inp_file' into file: $file"
+        if [[ "$do_follow" = true ]] ; then
+            ( tail -n +1 -f -- "$inp_file" | maybe_preprocess | maybe_uniq >> "$file" ) & pid_inp=$!
+        else
+             cat "$inp_file" | maybe_preprocess | maybe_uniq >> "$file"  # this is the only sync case in this block
+        fi
+    elif [[ -z "$inp_file" ]] ; then
+        # Stdin
+        file=$(mktemp)
+        debug "Read stdin into file: $file"
+        if [[ "$do_follow" = true ]] ; then
+            ( cat <&3 | maybe_preprocess | maybe_uniq >> "$file" ) & pid_inp=$!
+        else
+             cat <&3 | maybe_preprocess | maybe_uniq >> "$file"
+        fi
+    else
+        # Unaltered file
+        debug "Use input file as-is: $inp_file"
+    fi
+    [[ -n "$pid_inp" ]] && spawned_pids+=("$pid_inp") && debug "Spawned pid_inp: $pid_inp"
+    exec 3<&-
+
+    # Emit lines into a fifo for fzf to read from
+    # Use a fifo to ease subprocess cleanup
+    function emit_lines { maybe_tail "$file" | jq --unbuffered --raw-input --raw-output "$jq_prog" ; }
+    fifo_dir=$(mktemp -d)
+    fifo="$fifo_dir/fifo" ; mkfifo "$fifo"
+    ( emit_lines > "$fifo" ) & pid_emit=$!
+    [[ -n "$pid_emit" ]] && spawned_pids+=("$pid_emit") && debug "Spawned pid_emit: $pid_emit"
+
+    local -a headers=()
+    [[ -z "$JDD_NO_HELP" ]] && headers+=("Ctrl-/ for help")
+    [[ "$do_show_file" = true || -n "$JDD_SHOW_FILE" || -n "$JDD_DEBUG" ]] && headers+=("File: $file")
+    local -a header=()
+    if (( ${#headers[@]} )); then
+        joined=""
+        for h in "${headers[@]}"; do
+            [[ -n "$joined" ]] && joined+=" | "
+            joined+="$h"
+        done
+        header+=(--header "$joined")
+    fi
+
+    # Print waiting message if no input after a while
+    local max_wait=3000  # milliseconds
+    local waited=0
+    local printed=false
+    while [[ ! -s "$file" ]]; do
+        kill -0 "$pid_inp" 2>/dev/null || { err "No JSON received." ; return 1 ; }
+        sleep 0.1
+        waited=$((waited + 100))
+        if [[ $waited -ge "$max_wait" && "$printed" = false ]]; then
+            printf "Waiting for input..." >&2
+            printed=true
+        fi
+    done
+
+    FILE="$file" PREVIEWER="$previewer" DIFFER="$differ" INSPECTOR="$inspector" COPIER="$copier" \
+        fzf < "$fifo" \
+            --exact \
+            --delimiter=$'\t' \
+            --accept-nth="${val_idx}.." \
+            --track \
+            --no-sort \
+            "${header[@]}" \
+            --info=inline-right \
+            --tabstop=4 \
+            --freeze-left=2 \
+            --layout=reverse \
+            --tiebreak=begin,chunk,length \
+            --with-shell="bash -lc" \
+            --preview-window="bottom:70%,wrap" \
+            --bind "ctrl-n:down" \
+            --bind "ctrl-p:up" \
+            --bind "ctrl-j:page-down" \
+            --bind "ctrl-d:page-down" \
+            --bind "ctrl-k:page-up" \
+            --bind "ctrl-u:page-up" \
+            --bind "ctrl-h:preview-page-up" \
+            --bind "ctrl-l:preview-page-down" \
+            --bind "ctrl-f:first" \
+            --bind "ctrl-g:last" \
+            --bind "ctrl-v:up-match" \
+            --bind "ctrl-b:down-match" \
+            --bind "ctrl-t:best" \
+            --bind "ctrl-w:clear-query" \
+            --bind "ctrl-r:toggle-raw" \
+            --bind 'ctrl-/:execute:jdd help --keys | ${PAGER:-less -R}' \
+            --bind 'ctrl-y:execute-silent:
+                idx={1}
+                $COPIER <(sed -n "${idx}p" "$FILE")
+            ' \
+            --bind "ctrl-o:accept" \
+            --bind 'enter:transform:
+                q={q}
+                idx={1}
+                if [[ ! $FZF_PROMPT =~ ^goto ]]; then
+                    echo "execute($INSPECTOR <(sed -n "${idx}p" "$FILE"))"
+                    exit 0
+                fi
+                if [[ "$q" =~ ^[0-9]+$ ]]; then
+                    echo "enable-search+pos($q)+change-prompt(> )+clear-query"
+                    exit 0
+                fi
+                echo "enable-search+change-prompt(> )+clear-query"
+            ' \
+            --bind 'tab:transform:
+                q={q}
+                if [[ ! $FZF_PROMPT =~ ^goto ]]; then
+                    echo "disable-search+change-prompt(goto> )+clear-query"
+                    exit 0
+                fi
+                if [[ "$q" =~ ^[0-9]+$ ]]; then
+                    echo "enable-search+pos($q)+change-prompt(> )+clear-query"
+                    exit 0
+                fi
+                echo "enable-search+change-prompt(> )+clear-query"
+            ' \
+            --bind 'esc:transform:
+                if [[ ! $FZF_PROMPT =~ ^goto ]]; then
+                    echo "abort"
+                    exit 0
+                fi
+                echo "enable-search+change-prompt(> )+clear-query"
+            ' \
+            --preview '
+                idx={1}
+                if [ "$idx" -eq 1 ]; then
+                    sed -n "${idx}p" "$FILE" | $PREVIEWER
+                else
+                    prev=$((idx - 1))
+                    FORCE_COLOR=1 $DIFFER <(sed -n "${prev}p" "$FILE") <(sed -n "${idx}p" "$FILE")
+                fi
+            '
+}
+
+# surf explores a single JSON object via interactive query preview.
+#
+# Usage: jdd surf [FILE] [OPTIONS]
+function surf {
+    local file=""
+    local do_show_file=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file) do_show_file=true ; shift ;;
+            --help|-h) help ; return 0 ;;
+            -*) err "Unknown option: $1" ; help ; return 1 ;;
+            *) file="$1" ; shift ;;
+        esac
+    done
+    [[ -z "$file" ]] && { file=$(mktemp) && cat > "$file"; }
+    [[ ! -f "$file" ]] && { err "File does not exist: $file" ; return 1 ; }
+    [[ ! -r "$file" ]] && { err "File is not readable: $file" ; return 1 ; }
+    [[ ! -s "$file" ]] && { err "File is empty: $file" ; return 1 ; }
+
+    surfer="${JDD_SURFER:-jaq}"
+    surfer_preview="${JDD_SURFER_PREVIEW:-${surfer} --color-output}"
+    surfer_output="${JDD_SURFER_OUTPUT:-${surfer} --raw-output}"
+
+    local -a header=()
+    [[ "$do_show_file" = true || -n "$JDD_SHOW_FILE" ]] && header+=(--header "File: $file")
+
+    FILE="$file" PREVIEW="$surfer_preview" OUTPUT="$surfer_output" fzf < /dev/null \
+        --disabled \
+        --print-query \
+        --ghost="." \
+        "${header[@]}" \
+        --prompt="jq> " \
+        --no-info \
+        --layout=reverse \
+        --with-shell="bash -lc" \
+        --preview-window="bottom:99%" \
+        --bind 'ctrl-o:become:$OUTPUT {q} $FILE 2>/dev/null || $OUTPUT . $FILE || echo "Could not evaluate query." >&2' \
+        --preview='$PREVIEW {q} $FILE 2>/dev/null || $PREVIEW . $FILE || echo "Could not evaluate query." >&2'
+}
+
+function help {
+    local dive_keybindings=(
+        "Ctrl-/|Help (this message -- q to quit)"
+        "Ctrl-N/Down|Down"
+        "Ctrl-P/Up|Up"
+        "Ctrl-J/Ctrl-D|Page down"
+        "Ctrl-K/Ctrl-U|Page up"
+        "Ctrl-L|Preview page down"
+        "Ctrl-H|Preview page up"
+        "Ctrl-F|Jump to first entry"
+        "Ctrl-G|Jump to last entry"
+        "Ctrl-V|Jump to previous match"
+        "Ctrl-B|Jump to next match"
+        "Ctrl-T|Jump to best match"
+        "Ctrl-R|Toggle raw view"
+        "Ctrl-W|Clear query"
+        "Ctrl-Y|Copy current JSON entry to clipboard"
+        "Ctrl-O|Output current JSON entry to stdout and exit"
+        "Tab|Toggle 'goto' mode for jump to line number"
+        "Enter|Open in fx for further inspection"
+    )
+
+    local just_keybindings=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --keys) just_keybindings=true ; shift ;;
+            *) debug "Unknown option: $1" ; shift ;;
+        esac
+    done
+
+    [[ "$just_keybindings" = false ]] && cat >&2 <<EOF
+Navigate successive versions of a JSON object.
+
+Usage: jdd [COMMAND] [FILE] [FLAGS]
+
+Commands:
+    (no command)        Guess command from FILE extension
+    dive|hist           Navigate successive versions of a JSON object, via streaming or stored JSONL file.
+    surf|insp           Explore a single JSON object via interactive query preview.
+    help                Show this help message.
+
+Options:
+    --file              Show the file being processed.
+
+Dive options:
+    --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions.
+    --interval N        Interval in seconds between watch COMMAND executions (default: 5).
+    --pre               Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR).
+    --follow, -f        Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given).
+    --no-follow         Disable follow mode.
+    --all               Do not filter out consecutive duplicate JSON entries.
+    --tag OBJECT_PATH   Specify JSON object path to use as tag for each entry.
+
+Dive keybindings:
+EOF
+
+    for kb in "${dive_keybindings[@]}"; do
+        key="${kb%%|*}"
+        desc="${kb#*|}"
+        if [[ "$just_keybindings" = true ]]; then
+            pfield 19 "$key" "$desc"
+        else
+            pfield 23 "    $key" "$desc." >&2
+        fi
+    done
+}
+
+
+function err { echo "$@" >&2 ; }  # error print to stderr
+function debug { [[ -n "$JDD_DEBUG" ]] && echo "[DEBUG] $*" >&2 ; }  # debug print, only if JDD_DEBUG is set
+function pfield { printf "%-*s %s\n" "$1" "$2" "$3" ; }  # print one row of a two-column table
+
+
+# sponge collects all of stdin before writing to stdout.
+function sponge {
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    [[ -s "$tmpfile" ]] && cat "$tmpfile"
+    rm -f "$tmpfile"
+}
+
+
+# cleanup recursively kills child processes of the given PID.
+#
+# Requires: kill, pgrep
+#
+# REF: https://stackoverflow.com/questions/2618403
+#
+# Usage: cleanup PID [AND_SELF] [DEPTH]
+function cleanup_all {
+    local pid="$1"
+    local and_self="${2:-false}"
+    local depth="${3:-0}" ; local indent="" ; for ((i=0; i<depth; i++)) ; do indent+="  " ; done
+    if children=$(pgrep -P "$pid" 2>/dev/null); then
+        c=$(printf '%s' "$children" | tr '\n' ' ')
+        debug "${indent}Killing desc of pid $1: [$c]..."
+        for child in $children; do
+            cleanup_all "$child" true $((depth + 1))
+        done
+    fi
+    if [[ "$and_self" == true ]]; then
+        debug "${indent}Kill $pid"
+        kill -- "$pid" > /dev/null 2>&1 || true
+    fi
+}
+
+# cleanup kills all tracked spawned child processes.
+#
+# Requires: kill [DEPTH]
+function cleanup_tracked {
+    local depth="${1:-0}" ; local indent="" ; for ((i=0; i<depth; i++)) ; do indent+="  " ; done
+    debug "${indent}Killing tracked pids: [${spawned_pids[*]}]..."
+    local pid
+    for pid in "${spawned_pids[@]}"; do
+        debug "${indent}  Kill $pid"
+        kill -- "$pid" 2>/dev/null || true
+    done
+}
+spawned_pids=()
+
+# cleanup is the main cleanup function called on exit.
+#
+# cleanup_all first because it is the most thorough, but requires pgrep.
+# cleanup_tracked second as a fallback, it only requires kill.
+#
+# Usage: cleanup
+function cleanup {
+    debug "Cleaning up all child processes..."
+    cleanup_all "$1" false 1 || true
+    debug "Cleaning up tracked child processes..."
+    cleanup_tracked 1 || true
+    debug "Cleaned up child processes"
+}
+
+# Clean up child processes on exit
+trap 'cleanup $$ false' EXIT INT TERM HUP
+
+
+case "$1" in
+    "") dive "$@" ;;
+    dive|hist) shift || true ; dive "$@" ;;
+    surf|insp) shift || true ; surf "$@" ;;
+    help|-h|--help) shift || true ; help "$@" ;;
+    *) case "${1##*.}" in
+            jsonl|ndjson) dive "$@" ;;
+            json) surf "$@" ;;
+            *) dive "$@" ;;
+        esac
+        ;;
+esac
