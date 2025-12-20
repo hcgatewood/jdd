@@ -50,11 +50,11 @@ function dive {
     [[ ${#files[@]} -gt 1 ]] && multi_file=true
 
     [[ "$do_follow" = true && "$no_follow" = true ]] && { err "Cannot specify both --follow and --no-follow|--sponge" ; return 1 ; }
-    [[ "$has_file" = true && -n "$poll" ]] && { err "Cannot specify both FILE and --poll" ; return 1 ; }
-    [[ -n "$poll" && "$no_follow" = true ]] && { err "Cannot specify both --poll and --no-follow|--sponge" ; return 1 ; }
+    [[ "$do_watch" = true && -n "$poll" ]] && { err "Cannot specify both --watch and --poll" ; return 1 ; }
+    [[ -n "$poll" && "$has_file" = true ]] && { err "--poll cannot be used with a FILE argument" ; return 1 ; }
+    [[ -n "$poll" && "$no_follow" = true ]] && { err "--poll cannot be used with --no-follow|--sponge" ; return 1 ; }
     [[ "$do_watch" = true && "$has_file" = false ]] && { err "--watch requires a FILE argument" ; return 1 ; }
     [[ "$do_watch" = true && "$no_follow" = true ]] && { err "--watch cannot be used with --no-follow|--sponge" ; return 1 ; }
-    [[ "$do_watch" = true && -n "$poll" ]] && { err "Cannot specify both --watch and --poll" ; return 1 ; }
 
     [[ -n "$poll" || ( "$has_file" = false && "$no_follow" = false ) ]] && do_follow=true
 
