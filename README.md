@@ -1,6 +1,6 @@
 # jdd: JSON diff diver
 
-`jdd` is a CLI for navigating diff-over-time changes to a JSON object — a **JSON time machine**.
+`jdd` is a CLI for recording and navigating diff-over-time changes to a JSON object — a **JSON time machine**.
 
 <p align="center"><img src="https://raw.githubusercontent.com/hcgatewood/jdd/main/assets/logo.png" alt="jdd logo" width="300"/></p>
 
@@ -8,7 +8,7 @@
 
 <p align="center"><img src="https://raw.githubusercontent.com/hcgatewood/jdd/main/assets/demo.svg" alt="jdd demo" width="1000"/></p>
 
-- History of JSON object states as a JSONL file (or via stdin)
+- History of a JSON object (via recording, streaming, or pre-recorded history)
 - Navigate forward and backward in time
 - View diffs between each point in time
 - Inspect object content at any point in time
@@ -33,8 +33,6 @@ chmod +x /usr/local/bin/jdd
 ```
 
 ## Examples
-
-Subcommands: ***dive*** (alias: `hist`) is the JSON-over-time navigator, ***surf*** (alias: `insp`) is the single-JSON inspector.
 
 ### Replay pre-recorded history
 
@@ -91,6 +89,8 @@ jdd obj.json  # similar to jnv, jid
 ```
 
 ## Usage
+
+Subcommands: ***dive*** (alias: `hist`) is the JSON-over-time navigator, ***surf*** (alias: `insp`) is the single-JSON inspector.
 
 ```text
 Navigate successive versions of a JSON object.
@@ -154,7 +154,7 @@ Environment variables to customize behavior; generally they can be set to the na
 - `JDD_SHOW_FILE` show file name in fzf header (default: unset)
 - `JDD_NO_HELP` don't show help keybinding in dive (default: unset)
 - `JDD_DEBUG` enable debug logging (default: unset)
-- Additional tools: [fzf](https://github.com/junegunn/fzf), [jq](https://github.com/jqlang/jq), [gron](https://github.com/tomnomnom/gron), [mlr](https://github.com/johnkerl/miller)
+- Additional tools: [fzf](https://github.com/junegunn/fzf), [gron](https://github.com/tomnomnom/gron), [mlr](https://github.com/johnkerl/miller)
 
 ## How I use jdd
 
@@ -175,7 +175,7 @@ kubectl get pod MY_POD --watch -o json | jdd
 function kis {
     cat "${1:-/dev/stdin}"  \
     | mlr --icsv --ojsonl + put '$* = json_parse($UpdatedObject)' \
-    | jq -cS '
+    | jq --sort-keys --compact-output '
         select(.kind != "Event")
         | del(.metadata.resourceVersion)
         | del(.status.conditions?[]?.lastTransitionTime)
