@@ -46,7 +46,7 @@ jdd history.jsonl  # automatically jdd dive
 
 ```bash
 # Polling
-jdd --watch 'cat obj.json'
+jdd --watch "cat obj.json"
 
 # Streaming
 jdd --record obj.json
