@@ -8,12 +8,12 @@
 
 <p align="center"><img src="https://raw.githubusercontent.com/hcgatewood/jdd/main/assets/demo.svg" alt="jdd demo" width="1000"/></p>
 
-- History of a JSON object (via recording, streaming, or pre-recorded history)
-- Navigate forward and backward in time
-- View diffs between each point in time
-- Inspect object content at any point in time
-- Filter changes by object content
-- Jump to line number / change index
+- **History** of a JSON object (via recording, streaming, or pre-recorded history)
+- **Navigate forward and backward** in time
+- **View diffs** between each point in time
+- **Inspect object content** at any point in time
+- **Filter changes** by object content
+- **Jump to line** number / change index
 
 ## Installation
 
