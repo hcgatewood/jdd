@@ -73,7 +73,11 @@ jdd data.json  # automatically jdd surf
 ```text
 Navigate successive versions of a JSON object.
 
-Usage: jdd [COMMAND] [FILE] [FLAGS]
+Usage: jdd [COMMAND] [FILE...] [OPTIONS]
+
+Args:
+    COMMAND             The jdd command to run (dive, surf). If omitted, guessed from FILE extension and options.
+    FILE                Input file(s). If omitted, reads from stdin. If multiple files, treat as successive versions.
 
 Commands:
     (no command)        Guess command from FILE extension
@@ -82,15 +86,17 @@ Commands:
     help                Show this help message.
 
 Options:
-    --file              Show the file being processed.
+    --info              Show more info, like the file being processed.
 
 Dive options:
-    --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions.
-    --interval N        Interval in seconds between watch COMMAND executions (default: 5).
-    --pre               Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR).
-    --follow, -f        Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given).
+    --record COMMAND    FILE Record mode: monitor FILE for changes and append new JSON object versions to it. (Alias: --rec, -r)
+    --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
+    --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
+    --file SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
+    --preprocess        Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR). (Alias: --pre)
+    --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
     --no-follow         Disable follow mode.
-    --all               Do not filter out consecutive duplicate entries.
+    --all               Do not filter out consecutive duplicate entries (if using FILE, also prevents creating an intermediate file).
     --tag OBJECT_PATH   Specify JSON object path to use as tag for each entry.
 
 Dive keybindings:

@@ -13,41 +13,66 @@ function dive {
     exec 3<&0
     exec </dev/null
 
-    local file=""
+    local -a files=()
+    local do_record=false
     local watch=""
     local interval=5
+    local save_file=""
+    local force_save_file=false
     local tag=""
     local do_preprocess=false
     local do_uniq=true
     local do_follow=false
     local no_follow=false
-    local do_show_file=false
+    local do_show_info=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --record|--rec|-r) do_record=true ; shift ;;
             --watch|-w) watch="$2" ; shift 2 ;;
-            --interval|-i) interval="$2" ; shift 2 ;;
+            --interval|--int|-i) interval="$2" ; shift 2 ;;
+            --file) save_file="$2" ; shift 2 ;;
+            --force) force_save_file=true ; shift ;;
             --tag) tag="$2" ; shift 2 ;;
-            --pre) do_preprocess=true ; shift ;;
+            --preprocess|--pre) do_preprocess=true ; shift ;;
             --all) do_uniq=false ; shift ;;
             --follow|-f) do_follow=true ; shift ;;
             --no-follow) no_follow=true ; shift ;;
-            --file) do_show_file=true ; shift ;;
+            --info) do_show_info=true ; shift ;;
             --help|-h) help ; return 0 ;;
             -*) err "Unknown option: $1" ; help ; return 1 ;;
-            *) file="$1" ; shift ;;
+            *) files+=("$1") ; shift ;;
         esac
     done
 
+    local has_file=false
+    local multi_file=false
+    [[ ${#files[@]} -gt 0 ]] && has_file=true
+    [[ ${#files[@]} -gt 1 ]] && multi_file=true
+
     [[ "$do_follow" = true && "$no_follow" = true ]] && { err "Cannot specify both --follow and --no-follow" ; return 1 ; }
-    [[ -n "$file" && -n "$watch" ]] && { err "Cannot specify both FILE and --watch" ; return 1 ; }
+    [[ "$has_file" = true && -n "$watch" ]] && { err "Cannot specify both FILE and --watch" ; return 1 ; }
     [[ -n "$watch" && "$no_follow" = true ]] && { err "Cannot specify both --watch and --no-follow" ; return 1 ; }
+    [[ "$do_record" = true && "$has_file" = false ]] && { err "--record requires a FILE argument" ; return 1 ; }
+    [[ "$do_record" = true && "$no_follow" = true ]] && { err "--record cannot be used with --no-follow" ; return 1 ; }
+    [[ "$do_record" = true && -n "$watch" ]] && { err "Cannot specify both --record and --watch" ; return 1 ; }
 
-    [[ -n "$watch" || ( -z "$file" && "$no_follow" = false ) ]] && do_follow=true
+    [[ -n "$watch" || ( "$has_file" = false && "$no_follow" = false ) ]] && do_follow=true
 
-    if [[ -n "$file" ]] ; then
+    for file in "${files[@]}"; do
         [[ ! -f "$file" ]] && { err "File does not exist: $file" ; return 1 ; }
         [[ ! -r "$file" ]] && { err "File is not readable: $file" ; return 1 ; }
         [[ ! -s "$file" ]] && { err "File is empty: $file" ; return 1 ; }
+    done
+    if [[ -n "$save_file" && -e "$save_file" ]] ; then
+        [[ ! -f "$save_file" ]] && { err "--file '$save_file' is not a regular file." ; return 1 ; }
+        [[ ! -w "$save_file" ]] && { err "--file '$save_file' is not writable." ; return 1 ; }
+        if [[ "$force_save_file" = true ]] ; then
+            rm -f "$save_file"
+            debug "Removed existing save_file: '$save_file'"
+        else
+            err "--file '$save_file' already exists. Use --force to overwrite."
+            return 1
+        fi
     fi
 
     local val_idx=2
@@ -85,15 +110,17 @@ function dive {
     }
 
     debug "Inputs"
-    debug "  file: $file"
+    debug "  files: ${files[*]}"
+    debug "  do_record: $do_record"
     debug "  watch: $watch"
     debug "  interval: $interval"
+    debug "  save_file: $save_file"
     debug "  tag: $tag"
     debug "  do_preprocess: $do_preprocess"
     debug "  do_uniq: $do_uniq"
     debug "  do_follow: $do_follow"
     debug "  no_follow: $no_follow"
-    debug "  do_show_file: $do_show_file"
+    debug "  do_show_info: $do_show_info"
     debug "Intermediates"
     debug "  json_prog: $jq_prog"
     debug "Actors"
@@ -104,17 +131,30 @@ function dive {
     debug "  inspector: $inspector"
     debug "  copier: $copier"
 
-    # Need a tmp file if we're watching, altering the file, or reading from stdin
-    inp_file="$file"
-    if [[ -n "$watch" ]] ; then
+    # Need a tmp file if we're multi-files, recording, watching, altering the file, or reading from stdin
+    inp_file="${files[0]}"
+    if [[ "$multi_file" = true ]] ; then
+        file=$(get_save_file "$save_file") || return 1
+        debug "Combine multiple input files ${files[*]} into file: $file"
+        cat "${files[@]}" | maybe_preprocess | maybe_uniq >> "$file"
+    elif [[ "$do_record" = true ]] ; then
+        # Recording
+        file=$(get_save_file "$save_file") || return 1
+        do_follow=true  # implies follow
+        debug "Record changes to input file '$inp_file' into file: $file"
+        (
+            cat "$inp_file" | maybe_preprocess >> "$file"
+            fswatch --one-per-batch --print0 --follow-links "$inp_file" | while read -r -d "" _ ; do cat "$inp_file" | maybe_preprocess | maybe_uniq_watch "$file" | sponge >> "$file" ; done
+        ) & pid_inp=$!
+    elif [[ -n "$watch" ]] ; then
         # Watch
-        file=$(mktemp)
+        file=$(get_save_file "$save_file") || return 1
         do_follow=true  # implies follow
         debug "Watch command '${watcher[*]}' into file: $file"
         ( while true ; do "${watcher[@]}" | maybe_preprocess | maybe_uniq_watch "$file" | sponge >> "$file" ; sleep "$interval" ; done ) & pid_inp=$!
     elif [[ -n "$inp_file" && ("$do_uniq" = true || "$do_preprocess" = true) ]] ; then
         # Altered file
-        file=$(mktemp)
+        file=$(get_save_file "$save_file") || return 1
         debug "Process input file '$inp_file' into file: $file"
         if [[ "$do_follow" = true ]] ; then
             ( tail -n +1 -f "$inp_file" | maybe_preprocess | maybe_uniq >> "$file" ) & pid_inp=$!
@@ -123,7 +163,7 @@ function dive {
         fi
     elif [[ -z "$inp_file" ]] ; then
         # Stdin
-        file=$(mktemp)
+        file=$(get_save_file "$save_file") || return 1
         debug "Read stdin into file: $file"
         if [[ "$do_follow" = true ]] ; then
             ( cat <&3 | maybe_preprocess | maybe_uniq >> "$file" ) & pid_inp=$!
@@ -147,7 +187,7 @@ function dive {
 
     local -a headers=()
     [[ -z "$JDD_NO_HELP" ]] && headers+=("Ctrl-/ for help")
-    [[ "$do_show_file" = true || -n "$JDD_SHOW_FILE" || -n "$JDD_DEBUG" ]] && headers+=("File: $file")
+    [[ "$do_show_info" = true || -n "$JDD_SHOW_FILE" || -n "$JDD_DEBUG" ]] && headers+=("File: $file")
     local -a header=()
     if (( ${#headers[@]} )); then
         joined=""
@@ -255,17 +295,22 @@ function dive {
 #
 # Usage: jdd surf [FILE] [OPTIONS]
 function surf {
-    local file=""
-    local do_show_file=false
+    local -a files=()
+    local save_file=""
+    local do_show_info=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --file) do_show_file=true ; shift ;;
+            --info) do_show_info=true ; shift ;;
             --help|-h) help ; return 0 ;;
             -*) err "Unknown option: $1" ; help ; return 1 ;;
-            *) file="$1" ; shift ;;
+            *) files+=("$1") ; shift ;;
         esac
     done
-    [[ -z "$file" ]] && { file=$(mktemp) && cat > "$file"; }
+
+    [[ ${#files[@]} -gt 1 ]] && { err "surf only supports a single FILE" ; return 1 ; }
+
+    file="${files[0]}"
+    [[ -z "$file" ]] && { file=$(get_save_file "$save_file" "json") && cat > "$file" || return 1 ; }
     [[ ! -f "$file" ]] && { err "File does not exist: $file" ; return 1 ; }
     [[ ! -r "$file" ]] && { err "File is not readable: $file" ; return 1 ; }
     [[ ! -s "$file" ]] && { err "File is empty: $file" ; return 1 ; }
@@ -275,7 +320,7 @@ function surf {
     surfer_output="${JDD_SURFER_OUTPUT:-${surfer} --raw-output}"
 
     local -a header=()
-    [[ "$do_show_file" = true || -n "$JDD_SHOW_FILE" ]] && header+=(--header "File: $file")
+    [[ "$do_show_info" = true || -n "$JDD_SHOW_FILE" ]] && header+=(--header "File: $file")
 
     FILE="$file" PREVIEW="$surfer_preview" OUTPUT="$surfer_output" fzf < /dev/null \
         --disabled \
@@ -324,7 +369,11 @@ function help {
     [[ "$just_keybindings" = false ]] && cat >&2 <<EOF
 Navigate successive versions of a JSON object.
 
-Usage: jdd [COMMAND] [FILE] [FLAGS]
+Usage: jdd [COMMAND] [FILE...] [OPTIONS]
+
+Args:
+    COMMAND             The jdd command to run (dive, surf). If omitted, guessed from FILE extension and options.
+    FILE                Input file(s). If omitted, reads from stdin. If multiple files, treat as successive versions.
 
 Commands:
     (no command)        Guess command from FILE extension
@@ -333,15 +382,17 @@ Commands:
     help                Show this help message.
 
 Options:
-    --file              Show the file being processed.
+    --info              Show more info, like the file being processed.
 
 Dive options:
-    --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions.
-    --interval N        Interval in seconds between watch COMMAND executions (default: 5).
-    --pre               Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR).
-    --follow, -f        Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given).
+    --record COMMAND    FILE Record mode: monitor FILE for changes and append new JSON object versions to it. (Alias: --rec, -r)
+    --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
+    --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
+    --file SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
+    --preprocess        Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR). (Alias: --pre)
+    --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
     --no-follow         Disable follow mode.
-    --all               Do not filter out consecutive duplicate entries.
+    --all               Do not filter out consecutive duplicate entries (if using FILE, also prevents creating an intermediate file).
     --tag OBJECT_PATH   Specify JSON object path to use as tag for each entry.
 
 Dive keybindings:
@@ -359,10 +410,22 @@ EOF
 }
 
 
-function err { echo "$@" >&2 ; }  # error print to stderr
-function debug { [[ -n "$JDD_DEBUG" ]] && echo "[DEBUG] $*" >&2 ; }  # debug print, only if JDD_DEBUG is set
-function pfield { printf "%-*s %s\n" "$1" "$2" "$3" ; }  # print one row of a two-column table
-
+# get_save_file returns the save file path, creating a temporary file if needed.
+#
+# Usage: get_save_file SAVE_FILE [TMP_EXTENSION]
+function get_save_file {
+    local save_file="$1"
+    local tmp_extension="${2:-jsonl}"
+    if [[ -n "$save_file" ]] ; then
+        printf "%s" "$save_file"
+    else
+        local tmp out
+        tmp=$(mktemp -t "jdd") || { err "Failed to create temporary file for save_file" ; return 1 ; }
+        out="$tmp.$tmp_extension"
+        mv "$tmp" "$out" || { err "Failed to move temporary file to final save_file: '$tmp' to '$out'" ; return 1 ; }
+        printf "%s" "$out"
+    fi
+}
 
 # sponge collects all of stdin before writing to stdout.
 function sponge {
@@ -371,6 +434,11 @@ function sponge {
     [[ -s "$tmpfile" ]] && cat "$tmpfile"
     rm -f "$tmpfile"
 }
+
+
+function err { echo "$@" >&2 ; }  # error print to stderr
+function debug { [[ -n "$JDD_DEBUG" ]] && echo "[DEBUG] $*" >&2 ; }  # debug print, only if JDD_DEBUG is set
+function pfield { printf "%-*s %s\n" "$1" "$2" "$3" ; }  # print one row of a two-column table
 
 
 # cleanup recursively kills child processes of the given PID.
@@ -429,15 +497,44 @@ function cleanup {
 trap 'cleanup $$ false' EXIT INT TERM HUP
 
 
-case "$1" in
-    "") dive "$@" ;;
-    dive|hist) shift || true ; dive "$@" ;;
-    surf|insp) shift || true ; surf "$@" ;;
-    help|-h|--help) shift || true ; help "$@" ;;
-    *) case "${1##*.}" in
-            jsonl|ndjson) dive "$@" ;;
-            json) surf "$@" ;;
-            *) dive "$@" ;;
+function dispatch {
+    debug "Dispatch"
+    local cmd="$1"
+    case "$cmd" in
+        dive|hist) shift || true ; dive "$@" ; return ;;
+        surf|insp) shift || true ; surf "$@" ; return ;;
+        help|-h|--help) shift || true ; help "$@" ; return ;;
+    esac
+
+    local nfiles=0
+    local ext=""
+    local record=false
+    local arg=""
+
+    for arg in "$@"; do
+        case "$arg" in
+            --record|--rec|-r) record=true ;;
+            -*) ;;  # other options
+            *.jsonl|*.ndjson) ext="jsonl" ; nfiles=$((nfiles + 1)) ;;
+            *.json) ext="json" ; nfiles=$((nfiles + 1)) ;;
+            *) nfiles=$((nfiles + 1)) ;;
         esac
-        ;;
-esac
+    done
+
+    local choice=""
+
+    case "$ext" in
+        jsonl|ndjson) choice=dive ;;
+        json) if [[ "$record" = true || $nfiles -gt 1 ]] ; then choice=dive ; else choice=surf ; fi ;;
+        *) choice=dive ;;
+    esac
+
+    debug "  nfiles: $nfiles"
+    debug "  ext: $ext"
+    debug "  record: $record"
+    debug "  choice: $choice"
+
+    "$choice" "$@"
+}
+
+dispatch "$@"
