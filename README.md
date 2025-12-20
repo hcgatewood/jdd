@@ -34,41 +34,42 @@ chmod +x /usr/local/bin/jdd
 
 ## Examples
 
-### Replay pre-recorded history
+### Browse a pre-recorded history
 
 ```bash
 jdd history.jsonl
 ```
 
-### Record some history
+### Browse live changes
 
 ```bash
-# Polling
-jdd --watch "cat obj.json"
+# Poll in-place
+jdd --poll "cat obj.json"
 
-# Streaming
-jdd --record obj.json
+# Watch in-place
+jdd --watch obj.json
 
-# Save observed history to file
-jdd --record obj.json --save history.jsonl
+# Stream
+kubectl get pod YOUR_POD --watch -o json | jdd
 ```
 
-### Watch a stream of changes
+### Record changes into a history file
 
 ```bash
-# Polling
-jdd --watch "kubectl get pod YOUR_POD -o json"
+# Poll in-place + record changes
+jdd --poll "cat obj.json" --save history.jsonl
 
-# Streaming
-kubectl get pod YOUR_POD --watch -o json | jdd
+# Watch in-place + record changes
+jdd --watch obj.json --save history.jsonl
 
-# Save observed history to file
+# Stream + record changes
 kubectl get pod YOUR_POD --watch -o json | jdd --save history.jsonl
 ```
 
 ### Diff multiple files
 
 ```bash
+# Browse history with multiple files as successive versions
 jdd v1.json v2.json v3.json
 ```
 
@@ -78,14 +79,15 @@ jdd v1.json v2.json v3.json
 # Tail an ongoing recording
 jdd -f history.jsonl
 
-# Sponge a history/stream before diving
+# Sponge a history/stream before browsing
 cat history.jsonl | jdd --no-follow
 ```
 
 ### Inspect a single JSON object
 
 ```bash
-jdd obj.json  # similar to jnv, jid
+# Inspect an object via JSON paths (similar to jnv, jid)
+jdd obj.json  
 ```
 
 ## Usage
@@ -111,15 +113,15 @@ Options:
     --info              Show more info, like the file being processed.
 
 Dive options:
-    --record COMMAND    FILE Record mode: monitor FILE for changes and append new JSON object versions to it. (Alias: --rec, -r)
-    --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
-    --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
-    --save SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
-    --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
-    --no-follow         Disable follow mode.
-    --all               Do not filter out consecutive duplicate entries (if using FILE and --bare, also prevents creating an intermediate file).
-    --no-preprocess     Skip preprocessing each JSON entry into a single line (configure preprocessor via JDD_PREPROCESSOR). (Alias: --bare)
-    --tag OBJECT_PATH   Specify JSON object path to use as tag for each entry.
+    --save SAVE_FILE    Record history: specify SAVE_FILE to save observed history of changes (default: temporary file; recommendation: .jsonl extension).
+    --watch COMMAND     Watch mode: watch FILE for in-place changes to get new JSON object versions, appending to browsed history. (Alias: -w)
+    --poll COMMAND      Poll mode: run COMMAND periodically to get new JSON object versions, appending to browsed history. (Alias: -p)
+    --interval N        Poll mode interval in seconds between COMMAND executions (default: 5). (Alias: --int, -i)
+    --follow            Follow: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
+    --no-follow         Sponge: disable follow mode. (Alias: --sponge)
+    --all               Disable uniqueness filter: include all consecutive entries, even if they're identical (if using FILE and --bare, also prevents creating an intermediate file).
+    --no-preprocess     Skip preprocessing: don't preprocess each entry into a single line (configure preprocessor via JDD_PREPROCESSOR). (Alias: --bare)
+    --tag OBJECT_PATH   Add a tag: specify JSON path to use as tag for each entry.
 
 Dive keybindings:
     Ctrl-/              Help (this message -- q to quit).
@@ -183,7 +185,7 @@ function kis {
         | del(.status.placementStatuses?[]?.conditions?[]?.lastTransitionTime)
         | del(.status.placementStatuses?[]?.conditions?[]?.lastUpdateTime)
     ' \
-    | jdd --tag '.metadata.generation' --no-follow
+    | jdd --tag '.metadata.generation' --sponge
 }
 ```
 

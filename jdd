@@ -14,8 +14,8 @@ function dive {
     exec </dev/null
 
     local -a files=()
-    local do_record=false
-    local watch=""
+    local do_watch=false
+    local poll=""
     local interval=5
     local save_file=""
     local force_save_file=false
@@ -27,8 +27,8 @@ function dive {
     local do_show_info=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --record|--rec|-r) do_record=true ; shift ;;
-            --watch|-w) watch="$2" ; shift 2 ;;
+            --watch|-w) do_watch=true ; shift ;;
+            --poll|-p) poll="$2" ; shift 2 ;;
             --interval|--int|-i) interval="$2" ; shift 2 ;;
             --save) save_file="$2" ; shift 2 ;;
             --force) force_save_file=true ; shift ;;
@@ -36,7 +36,7 @@ function dive {
             --no-preprocess|--bare) do_preprocess=false ; shift ;;
             --all) do_uniq=false ; shift ;;
             --follow|-f) do_follow=true ; shift ;;
-            --no-follow) no_follow=true ; shift ;;
+            --no-follow|--sponge) no_follow=true ; shift ;;
             --info) do_show_info=true ; shift ;;
             --help|-h) help ; return 0 ;;
             -*) err "Unknown option: $1" ; help ; return 1 ;;
@@ -49,14 +49,14 @@ function dive {
     [[ ${#files[@]} -gt 0 ]] && has_file=true
     [[ ${#files[@]} -gt 1 ]] && multi_file=true
 
-    [[ "$do_follow" = true && "$no_follow" = true ]] && { err "Cannot specify both --follow and --no-follow" ; return 1 ; }
-    [[ "$has_file" = true && -n "$watch" ]] && { err "Cannot specify both FILE and --watch" ; return 1 ; }
-    [[ -n "$watch" && "$no_follow" = true ]] && { err "Cannot specify both --watch and --no-follow" ; return 1 ; }
-    [[ "$do_record" = true && "$has_file" = false ]] && { err "--record requires a FILE argument" ; return 1 ; }
-    [[ "$do_record" = true && "$no_follow" = true ]] && { err "--record cannot be used with --no-follow" ; return 1 ; }
-    [[ "$do_record" = true && -n "$watch" ]] && { err "Cannot specify both --record and --watch" ; return 1 ; }
+    [[ "$do_follow" = true && "$no_follow" = true ]] && { err "Cannot specify both --follow and --no-follow|--sponge" ; return 1 ; }
+    [[ "$has_file" = true && -n "$poll" ]] && { err "Cannot specify both FILE and --poll" ; return 1 ; }
+    [[ -n "$poll" && "$no_follow" = true ]] && { err "Cannot specify both --poll and --no-follow|--sponge" ; return 1 ; }
+    [[ "$do_watch" = true && "$has_file" = false ]] && { err "--watch requires a FILE argument" ; return 1 ; }
+    [[ "$do_watch" = true && "$no_follow" = true ]] && { err "--watch cannot be used with --no-follow|--sponge" ; return 1 ; }
+    [[ "$do_watch" = true && -n "$poll" ]] && { err "Cannot specify both --watch and --poll" ; return 1 ; }
 
-    [[ -n "$watch" || ( "$has_file" = false && "$no_follow" = false ) ]] && do_follow=true
+    [[ -n "$poll" || ( "$has_file" = false && "$no_follow" = false ) ]] && do_follow=true
 
     for file in "${files[@]}"; do
         [[ ! -f "$file" ]] && { err "File does not exist: $file" ; return 1 ; }
@@ -84,8 +84,8 @@ function dive {
 
     local -a preprocessor=(jq --unbuffered --sort-keys --compact-output .)
     [[ -n "$JDD_PREPROCESSOR" ]] && eval "preprocessor=($JDD_PREPROCESSOR)"
-    local -a watcher=(true)
-    [[ -n "$watch" ]] && eval "watcher=($watch)"
+    local -a poller=(true)
+    [[ -n "$poll" ]] && eval "poller=($poll)"
 
     local previewer="${JDD_PREVIEWER:-jq --color-output .}"
     local differ="${JDD_DIFFER:-jsondiffpatch}"
@@ -95,7 +95,7 @@ function dive {
     function maybe_preprocess { if [[ "$do_preprocess" = true ]] ; then "${preprocessor[@]}" ; else cat ; fi ; }
     function maybe_tail { if [[ "$do_follow" = true ]] ; then tail -n +1 -f "$1" ; else cat "$1" ; fi ; }
     function maybe_uniq { if [[ "$do_uniq" = true ]] ; then awk 'NR==1 { print $0; last=$0; fflush(); next } { if ($0 != last) { print $0; last=$0; fflush() } }' ; else cat ; fi ; }
-    function maybe_uniq_watch {
+    function maybe_uniq_poll {
         if [[ "$do_uniq" = true ]]; then
             local last ; last=$(sed -n '$p' "$1" 2>/dev/null || true)
             while IFS= read -r line; do
@@ -111,8 +111,8 @@ function dive {
 
     debug "Inputs"
     debug "  files: ${files[*]}"
-    debug "  do_record: $do_record"
-    debug "  watch: $watch"
+    debug "  do_watch: $do_watch"
+    debug "  poll: $poll"
     debug "  interval: $interval"
     debug "  save_file: $save_file"
     debug "  tag: $tag"
@@ -125,33 +125,33 @@ function dive {
     debug "  json_prog: $jq_prog"
     debug "Actors"
     debug "  preprocessor: ${preprocessor[*]}"
-    debug "  watcher: ${watcher[*]}"
+    debug "  poller: ${poller[*]}"
     debug "  previewer: $previewer"
     debug "  differ: $differ"
     debug "  inspector: $inspector"
     debug "  copier: $copier"
 
-    # Need a tmp file if we're multi-files, recording, watching, altering the file, or reading from stdin
+    # Need a tmp file if we're multi-files, watching, polling, altering the file, or reading from stdin
     inp_file="${files[0]}"
     if [[ "$multi_file" = true ]] ; then
         file=$(get_save_file "$save_file") || return 1
         debug "Combine multiple input files ${files[*]} into file: $file"
         cat "${files[@]}" | maybe_preprocess | maybe_uniq >> "$file"
-    elif [[ "$do_record" = true ]] ; then
-        # Recording
+    elif [[ "$do_watch" = true ]] ; then
+        # Watching
         file=$(get_save_file "$save_file") || return 1
         do_follow=true  # implies follow
-        debug "Record changes to input file '$inp_file' into file: $file"
+        debug "Watch changes to input file '$inp_file' into file: $file"
         (
             cat "$inp_file" | maybe_preprocess >> "$file"
-            fswatch --one-per-batch --print0 --follow-links "$inp_file" | while read -r -d "" _ ; do cat "$inp_file" | maybe_preprocess | maybe_uniq_watch "$file" | sponge >> "$file" ; done
+            fswatch --one-per-batch --print0 --follow-links "$inp_file" | while read -r -d "" _ ; do cat "$inp_file" | maybe_preprocess | maybe_uniq_poll "$file" | sponge >> "$file" ; done
         ) & pid_inp=$!
-    elif [[ -n "$watch" ]] ; then
-        # Watch
+    elif [[ -n "$poll" ]] ; then
+        # Poll
         file=$(get_save_file "$save_file") || return 1
         do_follow=true  # implies follow
-        debug "Watch command '${watcher[*]}' into file: $file"
-        ( while true ; do "${watcher[@]}" | maybe_preprocess | maybe_uniq_watch "$file" | sponge >> "$file" ; sleep "$interval" ; done ) & pid_inp=$!
+        debug "Poll command '${poller[*]}' into file: $file"
+        ( while true ; do "${poller[@]}" | maybe_preprocess | maybe_uniq_poll "$file" | sponge >> "$file" ; sleep "$interval" ; done ) & pid_inp=$!
     elif [[ -n "$inp_file" && ("$do_uniq" = true || "$do_preprocess" = true) ]] ; then
         # Altered file
         file=$(get_save_file "$save_file") || return 1
@@ -385,15 +385,15 @@ Options:
     --info              Show more info, like the file being processed.
 
 Dive options:
-    --record COMMAND    FILE Record mode: monitor FILE for changes and append new JSON object versions to it. (Alias: --rec, -r)
-    --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
-    --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
-    --save SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
-    --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
-    --no-follow         Disable follow mode.
-    --all               Do not filter out consecutive duplicate entries (if using FILE and --bare, also prevents creating an intermediate file).
-    --no-preprocess     Skip preprocessing each JSON entry into a single line (configure preprocessor via JDD_PREPROCESSOR). (Alias: --bare)
-    --tag OBJECT_PATH   Specify JSON object path to use as tag for each entry.
+    --save SAVE_FILE    Record history: specify SAVE_FILE to save observed history of changes (default: temporary file; recommendation: .jsonl extension).
+    --watch COMMAND     Watch mode: watch FILE for in-place changes to get new JSON object versions, appending to browsed history. (Alias: -w)
+    --poll COMMAND      Poll mode: run COMMAND periodically to get new JSON object versions, appending to browsed history. (Alias: -p)
+    --interval N        Poll mode interval in seconds between COMMAND executions (default: 5). (Alias: --int, -i)
+    --follow            Follow: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
+    --no-follow         Sponge: disable follow mode. (Alias: --sponge)
+    --all               Disable uniqueness filter: include all consecutive entries, even if they're identical (if using FILE and --bare, also prevents creating an intermediate file).
+    --no-preprocess     Skip preprocessing: don't preprocess each entry into a single line (configure preprocessor via JDD_PREPROCESSOR). (Alias: --bare)
+    --tag OBJECT_PATH   Add a tag: specify JSON path to use as tag for each entry.
 
 Dive keybindings:
 EOF
@@ -508,14 +508,14 @@ function dispatch {
 
     local n_files=0
     local ext=""
+    local poll=false
     local watch=false
-    local record=false
     local arg=""
 
     for arg in "$@"; do
         case "$arg" in
+            --poll|-p) poll=true ;;
             --watch|-w) watch=true ;;
-            --record|--rec|-r) record=true ;;
             -*) ;;  # other options
             *.jsonl|*.ndjson) ext="jsonl" ; n_files=$((n_files + 1)) ;;
             *.json) ext="json" ; n_files=$((n_files + 1)) ;;
@@ -527,14 +527,14 @@ function dispatch {
 
     case "$ext" in
         jsonl|ndjson) choice=dive ;;
-        json) if [[ "$watch" = true || "$record" = true || $n_files -gt 1 ]] ; then choice=dive ; else choice=surf ; fi ;;
+        json) if [[ "$poll" = true || "$watch" = true || $n_files -gt 1 ]] ; then choice=dive ; else choice=surf ; fi ;;
         *) choice=dive ;;
     esac
 
     debug "  n_files: $n_files"
     debug "  ext: $ext"
+    debug "  poll: $poll"
     debug "  watch: $watch"
-    debug "  record: $record"
     debug "  choice: $choice"
 
     "$choice" "$@"
