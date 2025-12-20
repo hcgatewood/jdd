@@ -39,7 +39,7 @@ Subcommands: ***dive*** (alias: `hist`) is the JSON-over-time navigator, ***surf
 ### Replay pre-recorded history
 
 ```bash
-jdd history.jsonl  # automatically jdd dive
+jdd history.jsonl
 ```
 
 ### Record some history
@@ -87,7 +87,7 @@ cat history.jsonl | jdd --no-follow
 ### Inspect a single JSON object
 
 ```bash
-jdd obj.json  # automatically jdd surf
+jdd obj.json  # similar to jnv, jid
 ```
 
 ## Usage
