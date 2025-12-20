@@ -68,6 +68,12 @@ kubectl get pod YOUR_POD --watch -o json | jdd
 kubectl get pod YOUR_POD --watch -o json | jdd --save history.jsonl
 ```
 
+### Diff multiple files
+
+```bash
+jdd v1.json v2.json v3.json
+```
+
 ### Tail an ongoing recording, or don't tail a stream
 
 ```bash
