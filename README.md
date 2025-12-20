@@ -46,26 +46,26 @@ jdd history.jsonl  # automatically jdd dive
 
 ```bash
 # Polling
-jdd --pre --watch 'cat obj.json'
+jdd --watch 'cat obj.json'
 
 # Streaming
-jdd --pre --record obj.json
+jdd --record obj.json
 
 # Save observed history to file
-jdd --pre --record obj.json --save history.jsonl
+jdd --record obj.json --save history.jsonl
 ```
 
 ### Watch a stream of changes
 
 ```bash
 # Polling
-jdd --pre --watch "kubectl get pod YOUR_POD -o json"
+jdd --watch "kubectl get pod YOUR_POD -o json"
 
 # Streaming
-kubectl get pod YOUR_POD --watch -o json | jdd --pre
+kubectl get pod YOUR_POD --watch -o json | jdd
 
 # Save observed history to file
-kubectl get pod YOUR_POD --watch -o json | jdd --pre --save history.jsonl
+kubectl get pod YOUR_POD --watch -o json | jdd --save history.jsonl
 ```
 
 ### Tail an ongoing recording, or don't tail a stream
@@ -109,10 +109,10 @@ Dive options:
     --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
     --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
     --save SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
-    --preprocess        Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR). (Alias: --pre)
     --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
     --no-follow         Disable follow mode.
-    --all               Do not filter out consecutive duplicate entries (if using FILE, also prevents creating an intermediate file).
+    --all               Do not filter out consecutive duplicate entries (if using FILE and --bare, also prevents creating an intermediate file).
+    --no-preprocess     Skip preprocessing each JSON entry into a single line (configure preprocessor via JDD_PREPROCESSOR). (Alias: --bare)
     --tag OBJECT_PATH   Specify JSON object path to use as tag for each entry.
 
 Dive keybindings:
@@ -157,7 +157,7 @@ I mainly use `jdd` to track changes to Kubernetes objects.
 ### Live-streamed changes
 
 ```bash
-kubectl get pod MY_POD --watch -o json | jdd dive --pre
+kubectl get pod MY_POD --watch -o json | jdd
 ```
 
 ### Offline changes from OpenSearch-stored audit logs
@@ -177,7 +177,7 @@ function kis {
         | del(.status.placementStatuses?[]?.conditions?[]?.lastTransitionTime)
         | del(.status.placementStatuses?[]?.conditions?[]?.lastUpdateTime)
     ' \
-    | jdd dive --tag '.metadata.generation' --no-follow
+    | jdd --tag '.metadata.generation' --no-follow
 }
 ```
 

@@ -20,7 +20,7 @@ function dive {
     local save_file=""
     local force_save_file=false
     local tag=""
-    local do_preprocess=false
+    local do_preprocess=true
     local do_uniq=true
     local do_follow=false
     local no_follow=false
@@ -33,7 +33,7 @@ function dive {
             --save) save_file="$2" ; shift 2 ;;
             --force) force_save_file=true ; shift ;;
             --tag) tag="$2" ; shift 2 ;;
-            --preprocess|--pre) do_preprocess=true ; shift ;;
+            --no-preprocess|--bare) do_preprocess=false ; shift ;;
             --all) do_uniq=false ; shift ;;
             --follow|-f) do_follow=true ; shift ;;
             --no-follow) no_follow=true ; shift ;;
@@ -389,10 +389,10 @@ Dive options:
     --watch COMMAND     Watch mode: run COMMAND periodically to get new JSON object versions. (Alias: -w)
     --interval N        Interval in seconds between watch COMMAND executions (default: 5). (Alias: --int, -i)
     --save SAVE_FILE    Specify SAVE_FILE to store observed/intermediate changes (default: temporary file; recommendation: .jsonl extension).
-    --preprocess        Preprocess each JSON entry into a single line before further processing (configure via JDD_PREPROCESSOR). (Alias: --pre)
     --follow            Follow mode: keep reading new entries as they are appended to FILE (default if no FILE is given). (Alias: -f)
     --no-follow         Disable follow mode.
-    --all               Do not filter out consecutive duplicate entries (if using FILE, also prevents creating an intermediate file).
+    --all               Do not filter out consecutive duplicate entries (if using FILE and --bare, also prevents creating an intermediate file).
+    --no-preprocess     Skip preprocessing each JSON entry into a single line (configure preprocessor via JDD_PREPROCESSOR). (Alias: --bare)
     --tag OBJECT_PATH   Specify JSON object path to use as tag for each entry.
 
 Dive keybindings:
