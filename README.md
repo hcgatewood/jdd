@@ -191,7 +191,7 @@ function kis {
 
 ## See also
 
-- [Kuba](https://github.com/hcgatewood/kuba): the magical kubectl companion
-- [Appa](https://github.com/hcgatewood/appa): Markdown previews with live reload
-- [Vis](https://github.com/hcgatewood/vis): visualize fuzzy tabular data
-- [PDate](https://github.com/hcgatewood/pdate): human-readable dates and times
+- 🪄 [Kuba](https://github.com/hcgatewood/kuba): the magical kubectl companion
+- ☁️ [Appa](https://github.com/hcgatewood/appa): Markdown previews with live reload
+- 🔮 [PDate](https://github.com/hcgatewood/pdate): human-readable dates and times
+- 🔬 [Vis](https://github.com/hcgatewood/vis): visualize fuzzy tabular data
