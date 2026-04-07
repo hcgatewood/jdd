@@ -178,9 +178,10 @@ kubectl get pod MY_POD --watch -o json | jdd
 # Usage: kis insights.csv
 function kis {
     cat "${1:-/dev/stdin}"  \
-    | mlr --icsv --ojsonl + put '$* = json_parse($UpdatedObject)' \
+    | mlr --icsv --ojsonl + cut -f 'UpdatedObject' \
     | jq --sort-keys --compact-output '
-        select(.kind != "Event")
+        .UpdatedObject | fromjson?
+        | select(.kind != "Event")
         | del(.metadata.resourceVersion)
         | del(.status.conditions?[]?.lastTransitionTime)
         | del(.status.conditions?[]?.lastUpdateTime)
