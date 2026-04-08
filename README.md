@@ -17,7 +17,7 @@
 - **Filter changes** by object content
 - **Jump to line** number / change index
 
-## Installation
+## Install
 
 ### Homebrew
 
